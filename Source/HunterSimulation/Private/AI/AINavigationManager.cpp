@@ -150,7 +150,7 @@ void UAINavigationManager::OnSpotsRefreshed()
 		float ShortDist = MAX_FLT;
 		bool bFound = false;
 
-		for (FVector Spot : CachedSpots)
+		for (FVector Spot : SafeSpots)
 		{
 			if (bHidden && Spot.Equals(CurrentSpot, 1.f))
 			{
