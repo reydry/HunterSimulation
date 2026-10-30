@@ -6,7 +6,6 @@
 
 void UAINavigationManager::Init()
 {
-	GetAllAICharacters();
 	CalculateEQSGenerationOrigin();
 	GetAllCoverPoints();
 }
@@ -23,7 +22,7 @@ void UAINavigationManager::OnQueryFinished(UEnvQueryInstanceBlueprintWrapper* Qu
 		return;
 	}
 
-	CachedCoverPoints = QueryInstance->GetResultsAsLocations();
+	CachedSpots = QueryInstance->GetResultsAsLocations();
 
 	StartTomAndJerryLogic();
 }
@@ -31,7 +30,7 @@ void UAINavigationManager::OnQueryFinished(UEnvQueryInstanceBlueprintWrapper* Qu
 void UAINavigationManager::StartTomAndJerryLogic()
 {
 	SafeSpots.Reset();
-	SafeSpots.Reserve(CachedCoverPoints.Num());
+	SafeSpots.Reserve(CachedSpots.Num());
 	
 	FTimerManagerTimerParameters Params;
 	Params.bLoop = true;
@@ -42,45 +41,43 @@ void UAINavigationManager::StartTomAndJerryLogic()
 
 void UAINavigationManager::RefreshSpots()
 {
-	SafeSpots.Reset();
 	FindSafeSpots(SafeSpots);
-
-	for (FVector Point : CachedCoverPoints)
-	{
-		if (!SafeSpots.Contains(Point))
-		{
-			DrawDebugPoint(GetWorld(), Point, 25, FColor::Red, false, 0.5f);
-		}
-		else
-		{
-			DrawDebugPoint(GetWorld(), Point, 25, FColor::Green, false, 0.5f);
-		}
-	}
+	DebugDrawSpots();
+	OnSpotsRefreshed();
+	DebugDrawTakenSpots();
 }
 
 void UAINavigationManager::FindSafeSpots(TArray<FVector>& OutArray)
 {
-	AActor* Enemy = AICharacters[0];
+	SafeSpots.Reset();
 
-	if (!IsValid(Enemy))
+	for (AActor* Enemy : Hunters)
 	{
-		return;
-	}
+		FVector EnemyLocation = FVector::ZeroVector;
+		FRotator EnemyRotation = FRotator::ZeroRotator;
 
-	FVector EnemyLocation = FVector::ZeroVector;
-	FRotator EnemyRotation = FRotator::ZeroRotator;
+		Enemy->GetActorEyesViewPoint(EnemyLocation, EnemyRotation);
 
-	Enemy->GetActorEyesViewPoint(EnemyLocation, EnemyRotation);
+		FVector EnemyViewDirection = EnemyRotation.Vector();
 
-	FVector EnemyViewDirection = EnemyRotation.Vector();	
-
-	for (FVector Spot : CachedCoverPoints)
-	{
-		bool bVisible = IsSpotVisible(EnemyLocation, EnemyViewDirection, Spot, Enemy);
-
-		if (!bVisible)
+		for (FVector Spot : CachedSpots)
 		{
-			OutArray.Emplace(Spot);
+			bool bVisible = IsSpotVisible(EnemyLocation, EnemyViewDirection, Spot, Enemy);
+
+			if (!bVisible)
+			{
+				if (!OutArray.Contains(Spot))
+				{
+					OutArray.Emplace(Spot);
+				}
+			}
+			else
+			{
+				if (OutArray.Contains(Spot))
+				{
+					OutArray.Remove(Spot);
+				}
+			}
 		}
 	}
 }
@@ -96,6 +93,24 @@ bool UAINavigationManager::IsSpotVisible(FVector& Location, FVector& Direction, 
 
 	FVector DirectionToSpot = (Spot - Location).GetSafeNormal();
 	
+	if (IsOutOfLOS(Direction, DirectionToSpot))
+	{
+		return false;
+	}
+
+	FCollisionQueryParams Params;
+	Params.bTraceComplex = false;
+	Params.AddIgnoredActor(Enemy);
+
+	FHitResult HitResult;
+	
+	bool bVisible = World->LineTraceTestByChannel(Location, Spot, ECC_Visibility, Params);
+
+	return !bVisible;
+}
+
+bool UAINavigationManager::IsOutOfLOS(FVector& Direction, FVector& DirectionToSpot)
+{
 	FVector HorizontalView = Direction;
 	HorizontalView.Z = 0.0f;
 	HorizontalView.Normalize();
@@ -106,20 +121,100 @@ bool UAINavigationManager::IsSpotVisible(FVector& Location, FVector& Direction, 
 
 	float Dot = FVector::DotProduct(HorizontalView, HorizontalTarget);
 	float CosHalfFOV = FMath::Cos(FMath::DegreesToRadians(60));
+	
+	return Dot < CosHalfFOV;
+}
 
-	if (Dot < CosHalfFOV)
+void UAINavigationManager::OnSpotsRefreshed()
+{
+	for (AActor* Victim : Victims)
 	{
-		return false;
+		FVector CurrentSpot = FVector::ZeroVector;
+		FVector BestSpot = FVector::ZeroVector;
+		FVector *TakenSpot = TakenSpots.Find(Victim);
+	
+		bool bHidden = TakenSpot != nullptr;
+		
+		if (bHidden)
+		{
+			CurrentSpot = *TakenSpot;
+		}
+
+		if (bHidden && IsSpotStillNotSeen(CurrentSpot))
+		{
+			continue;
+		}
+
+		CurrentSpot = Victim->GetActorLocation();
+		
+		float ShortDist = MAX_FLT;
+		bool bFound = false;
+
+		for (FVector Spot : CachedSpots)
+		{
+			if (bHidden && Spot.Equals(CurrentSpot, 1.f))
+			{
+				continue;
+			}
+
+			float Dist = FVector::DistSquared(CurrentSpot, Spot);
+			
+			if (Dist < ShortDist)
+			{
+				ShortDist = Dist;
+				BestSpot = Spot;
+				bFound = true;
+			}
+		}
+
+		if (bFound)
+		{
+			TakenSpots.Remove(Victim);
+			TakenSpots.Emplace(Victim, BestSpot);
+			OnSpotChangedDelegateHandle.Broadcast(Victim, BestSpot);
+		}
+	}
+}
+
+bool UAINavigationManager::IsSpotStillNotSeen(FVector& Spot)
+{
+	return SafeSpots.Contains(Spot);
+}
+
+void UAINavigationManager::DebugDrawSpots()
+{
+	bool bDrawSafeSpots = CVarDrawDebugSpots.GetValueOnGameThread();
+
+	if (!bDrawSafeSpots)
+	{
+		return;
 	}
 
-	FCollisionQueryParams Params;
-	Params.bTraceComplex = false;
-	Params.AddIgnoredActor(AICharacters[0]);
-	FHitResult HitResult;
-	bool bVisible = World->LineTraceTestByChannel(Location, Spot, ECC_Visibility, Params);
-
-	return !bVisible;
+	for (FVector Spot : CachedSpots)
+	{
+		if (!SafeSpots.Contains(Spot))
+		{
+			DrawDebugSphere(GetWorld(), Spot, 32, 1, FColor::Red, false, 0.5f, 0U, 5.f);
+		}
+		else
+		{
+			DrawDebugSphere(GetWorld(), Spot, 32, 1, FColor::Green, false, 0.5f, 0U, 5.f);
+		}
+	}
 }
+
+void UAINavigationManager::DebugDrawTakenSpots()
+{
+	//DrawDebugDirectionalArrow(GetWorld())
+	for (auto& Spot : TakenSpots)
+	{
+
+
+			DrawDebugSphere(GetWorld(), Spot.Value, 64, 1, FColor::Blue, false, 0.5f, 0U, 5.f);
+
+	}
+}
+
 
 void UAINavigationManager::GetAllCoverPoints()
 {
@@ -132,21 +227,29 @@ void UAINavigationManager::GetAllCoverPoints()
 	}
 }
 
-void UAINavigationManager::GetAllAICharacters()
-{
-	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AICharacterClass, AICharacters);
-}
-
 FVector UAINavigationManager::CalculateEQSGenerationOrigin()
 {
 	FVector Origin = FVector::ZeroVector;
 
-	for (AActor* Actor : AICharacters)
+	for (AActor* Actor : Hunters)
 	{
 		Origin += Actor->GetActorLocation();
 	}
 
-	return Origin / AICharacters.Num();
+	for (AActor* Actor : Victims)
+	{
+		Origin += Actor->GetActorLocation();
+	}
+
+	return Origin / (Hunters.Num() + Victims.Num());
 }
 
+void UAINavigationManager::RegisterHunters(TArray<AActor*> Actors)
+{
+	Hunters = Actors;
+}
 
+void UAINavigationManager::RegisterVictims(TArray<AActor*> Actors)
+{
+	Victims = Actors;
+}
