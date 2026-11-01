@@ -17,6 +17,12 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogMoveToSpot, Log, All);
 
+static TAutoConsoleVariable<int32> CVarDrawDebugRoutes(
+	TEXT("ai.debug.routes"), 
+	0,
+	TEXT("0 = off, 1 = active route (green = concealed, red = exposed), 2 = also the alternatives considered at the last replan, with verdicts"),
+	ECVF_Default);
+
 EStateTreeRunStatus FSTT_MoveToSpot::EnterState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
@@ -57,6 +63,24 @@ EStateTreeRunStatus FSTT_MoveToSpot::Tick(FStateTreeExecutionContext& Context, c
 		return Replan(InstanceData) ? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;
 	}
 
+	if (CVarDrawDebugRoutes.GetValueOnGameThread() > 0 && InstanceData.CurrentSpot.X < FLT_MAX)
+	{
+		UWorld* World = Owner->GetWorld();
+
+		if (FMath::Fmod(World->GetTimeSeconds(), 0.25f) < DeltaTime)
+		{
+			DebugDrawRoute(World, Owner, ActorLocation, InstanceData.CurrentSpot, InstanceData.Hunters, 4.f, 0.3f,
+				FString::Printf(TEXT("%s ACTIVE -> %s"), *GetNameSafe(Owner),
+					InstanceData.bAtTarget ? TEXT("final spot") : TEXT("intermediate spot")));
+
+			if (!InstanceData.bAtTarget)
+			{
+				DrawDebugLine(World, InstanceData.CurrentSpot + FVector(0, 0, 25.f), InstanceData.Spot + FVector(0, 0, 25.f),
+					FColor(150, 150, 150), false, 0.3f, 0, 1.f);
+			}
+		}
+	}
+
 	return EStateTreeRunStatus::Running;
 }
 
@@ -66,7 +90,6 @@ bool FSTT_MoveToSpot::IsPathExposed(UWorld* World, AActor* Pawn, FVector& Start,
 	
 	if (!IsValid(NavigationSystem))
 	{
-		UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] IsPathExposed: navigation system is invalid, treating path as hidden"), *GetNameSafe(Pawn));
 		return false;
 	}
 
@@ -74,16 +97,10 @@ bool FSTT_MoveToSpot::IsPathExposed(UWorld* World, AActor* Pawn, FVector& Start,
 	
 	if (!IsValid(Path))
 	{
-		UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] IsPathExposed: no navigation path %s -> %s, treating path as exposed"), *GetNameSafe(Pawn),
-			*Start.ToCompactString(), *End.ToCompactString());
 		return true;
 	}
 
 	TArray<FVector> PathPoints = Path->PathPoints;
-
-	UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] IsPathExposed: path %s -> %s, points=%d, valid=%s, partial=%s, hunters=%d"), *GetNameSafe(Pawn),
-		*Start.ToCompactString(), *End.ToCompactString(), PathPoints.Num(),
-		Path->IsValid() ? TEXT("yes") : TEXT("no"), Path->IsPartial() ? TEXT("yes") : TEXT("no"), Hunters.Num());
 
 	for (AActor* Hunter : Hunters)
 	{
@@ -91,17 +108,10 @@ bool FSTT_MoveToSpot::IsPathExposed(UWorld* World, AActor* Pawn, FVector& Start,
 		{
 			if (IsPathSegmentExposed(PathPoints[i], PathPoints[i + 1], Hunter, 60))
 			{
-				UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] IsPathExposed: segment %d/%d (%s -> %s) is seen by hunter %s -> EXPOSED"), *GetNameSafe(Pawn),
-					i, PathPoints.Num() - 1,
-					*PathPoints[i].ToCompactString(), *PathPoints[i + 1].ToCompactString(),
-					*GetNameSafe(Hunter));
 				return true;
 			}
 		}
 	}
-	
-	UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] IsPathExposed: path %s -> %s is hidden from all hunters"), *GetNameSafe(Pawn),
-		*Start.ToCompactString(), *End.ToCompactString());
 
 	return false;
 }
@@ -110,7 +120,6 @@ bool FSTT_MoveToSpot::IsPathSegmentExposed(FVector& Start, FVector& End, AActor*
 {
 	if (!IsValid(Hunter))
 	{
-		UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] IsPathSegmentExposed: hunter is invalid, skipping"), *GetNameSafe(Hunter));
 		return false;
 	}
 
@@ -120,10 +129,6 @@ bool FSTT_MoveToSpot::IsPathSegmentExposed(FVector& Start, FVector& End, AActor*
 	Hunter->GetActorEyesViewPoint(EyeLocation, EyeRotation);
 
 	const bool bExposed = IsPathSegmentExposed2D(Start, End, EyeLocation, EyeRotation.Vector(), HalfFOV);
-
-	UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] IsPathSegmentExposed: eye=%s, dir=%s, halfFOV=%.1f, segment %s -> %s, inFOV=%s"), *GetNameSafe(Hunter),
-		*EyeLocation.ToCompactString(), *EyeRotation.Vector().ToCompactString(), HalfFOV,
-		*Start.ToCompactString(), *End.ToCompactString(), bExposed ? TEXT("yes") : TEXT("no"));
 
 	return bExposed;
 }
@@ -180,7 +185,6 @@ void FSTT_MoveToSpot::AddVisited(FVector& Spot, FInstanceDataType& InstanceData)
 {
 	InstanceData.VisitedSpots.Emplace(Spot);
 	const APawn* Pawn = IsValid(InstanceData.Controller) ? InstanceData.Controller->GetPawn() : nullptr;
-	UE_LOG(LogMoveToSpot, Log, TEXT("[%s] AddVisited: spot=%s, totalVisited=%d"), *GetNameSafe(Pawn), *Spot.ToCompactString(), InstanceData.VisitedSpots.Num());
 }
 
 bool FSTT_MoveToSpot::Replan(FInstanceDataType& InstanceData) const
@@ -191,25 +195,16 @@ bool FSTT_MoveToSpot::Replan(FInstanceDataType& InstanceData) const
 
 	if (!IsValid(World))
 	{
-		UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] Replan: pawn or world is invalid -> false"), *GetNameSafe(Controller));
 		return false;
 	}
 
 	FVector Target = InstanceData.Spot;
 	FVector Start = Owner->GetActorLocation();
 	
-	UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: start=%s, finalSpot=%s, currentSpot=%s, visited=%d, safeSpots=%d"), *GetNameSafe(Owner),
-		*Start.ToCompactString(), *InstanceData.Spot.ToCompactString(),
-		*InstanceData.CurrentSpot.ToCompactString(), InstanceData.VisitedSpots.Num(), InstanceData.SafeSpots.Num());
-
 	if (IsPathExposed(World, Owner, Start, Target, InstanceData.Hunters))
 	{
-		UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: direct path to final spot is EXPOSED, looking for safe spots"), *GetNameSafe(Owner));
-
 		TArray<FVector> PossibleSpots;
 		PickSpots(Start, InstanceData, PossibleSpots);
-
-		UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: %d candidate spot(s) picked"), *GetNameSafe(Owner), PossibleSpots.Num());
 
 		bool bFoundSafeSpot = false;
 
@@ -219,32 +214,19 @@ bool FSTT_MoveToSpot::Replan(FInstanceDataType& InstanceData) const
 
 			if (!bExposed)
 			{
-				UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: candidate %s -> %s"), *GetNameSafe(Owner),
-					*Spot.ToCompactString(), bExposed ? TEXT("exposed") : TEXT("hidden"));
-
 				Target = Spot;
 				bFoundSafeSpot = true;
 				break;
 			}
 		}
 
-		if (!bFoundSafeSpot)
-		{
-			UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] Replan: no hidden candidate found, falling back to final spot"), *GetNameSafe(Owner));
-		}
-	}
-	else
-	{
-		UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: direct path to final spot is hidden, going directly"), *GetNameSafe(Owner));
+		DebugDrawDecision(World, Owner, Start, InstanceData.Spot, InstanceData.Hunters, PossibleSpots, Target, true);
 	}
 
 	bool bIsTarget = Target.Equals(InstanceData.Spot, 1.f);
 
 	if (Target.Equals(InstanceData.CurrentSpot, 1.f) && Controller->GetMoveStatus() == EPathFollowingStatus::Moving)
 	{
-		UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: target %s unchanged and already moving, not restarting movement"), *GetNameSafe(Owner),
-			*Target.ToCompactString());
-
 		InstanceData.bAtTarget = bIsTarget;
 		return true;
 	}
@@ -254,11 +236,6 @@ bool FSTT_MoveToSpot::Replan(FInstanceDataType& InstanceData) const
 
 	EPathFollowingRequestResult::Type Result = Controller->MoveToLocation(Target, InstanceData.AcceptanceRadius, false, true, true);
 
-	UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: MoveToLocation(%s, radius %.1f) [%s] -> result=%d, moveStatus=%d"), *GetNameSafe(Owner),
-		*Target.ToCompactString(), InstanceData.AcceptanceRadius,
-		bIsTarget ? TEXT("final spot") : TEXT("intermediate spot"),
-		static_cast<int32>(Result), static_cast<int32>(Controller->GetMoveStatus()));
-
 	if (Result != EPathFollowingRequestResult::Type::Failed)
 	{
 		return true;
@@ -266,13 +243,8 @@ bool FSTT_MoveToSpot::Replan(FInstanceDataType& InstanceData) const
 
 	if (bIsTarget)
 	{
-		UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] Replan: MoveToLocation to final spot failed -> false"), *GetNameSafe(Owner));
-
 		return false;
 	}
-
-	UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] Replan: MoveToLocation to intermediate spot %s failed, marking visited"), *GetNameSafe(Owner),
-		*Target.ToCompactString());
 
 	AddVisited(Target, InstanceData);
 
@@ -283,11 +255,7 @@ void FSTT_MoveToSpot::PickSpots(FVector& Start, FInstanceDataType& InstanceData,
 {
 	OutSpots.Reset();
 	const APawn* Pawn = IsValid(InstanceData.Controller) ? InstanceData.Controller->GetPawn() : nullptr;
-	struct FSpot
-	{
-		FVector Location;
-		float Detour;
-	};
+
 	const int32 MaxCandidates = 5;
 	TArray<FSpot> Best;
 	Best.Reserve(MaxCandidates + 1);
@@ -314,15 +282,11 @@ void FSTT_MoveToSpot::PickSpots(FVector& Start, FInstanceDataType& InstanceData,
 
 		if (bVisited)
 		{
-			++SkippedVisited;
 			continue;
 		}
 		
 		if (Best.Num() >= MaxCandidates && DetourLength >= Best.Last().Detour)
 		{
-			++SkippedWorse;
-			UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] PickSpots: spot %s skipped (detour %.1f >= worst kept %.1f)"), *GetNameSafe(Pawn),
-				*Spot.ToCompactString(), DetourLength, Best.Last().Detour);
 			continue;
 		}
 
@@ -358,5 +322,147 @@ void FSTT_MoveToSpot::ExitState(FStateTreeExecutionContext& Context, const FStat
 	if (IsValid(InstanceData.Controller) && InstanceData.Controller->GetMoveStatus() != EPathFollowingStatus::Idle)
 	{
 		InstanceData.Controller->StopMovement();
+	}
+}
+
+FRouteDebugInfo FSTT_MoveToSpot::DebugDrawRoute(UWorld* World, AActor* Pawn, const FVector& Start, const FVector& End,
+	TArray<AActor*>& Hunters, float Thickness, float Duration, const FString& Label) const
+{
+	FRouteDebugInfo Info;
+
+	const FVector Lift(0.f, 0.f, 25.f);
+
+	UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(World);
+	UNavigationPath* Path = NavSys ? NavSys->FindPathToLocationSynchronously(World, Start, End, Pawn) : nullptr;
+
+	if (!Path || Path->PathPoints.Num() < 2)
+	{
+		DrawDebugLine(World, Start + Lift, End + Lift, FColor::Magenta, false, Duration, 0, 1.f);
+		DrawDebugString(World, End + Lift * 6.f, FString::Printf(TEXT("%s | NO NAV PATH"), *Label), nullptr, FColor::Magenta, Duration, true);
+		return Info;
+	}
+
+	Info.bPathFound = true;
+	const TArray<FVector>& Points = Path->PathPoints;
+	Info.SegmentCount = Points.Num() - 1;
+
+	for (int32 i = 0; i < Info.SegmentCount; ++i)
+	{
+		FVector A = Points[i];
+		FVector B = Points[i + 1];
+		const float Length = FVector::Dist(A, B);
+
+		FString SeenBy;
+		for (AActor* Hunter : Hunters)
+		{
+			if (IsPathSegmentExposed(A, B, Hunter, 60))
+			{
+				SeenBy = GetNameSafe(Hunter);
+				break;
+			}
+		}
+
+		const bool bExposed = !SeenBy.IsEmpty();
+		const FColor Color = bExposed ? FColor::Red : FColor::Green;
+
+		DrawDebugLine(World, A + Lift, B + Lift, Color, false, Duration, 0, Thickness);
+		DrawDebugSphere(World, B + Lift, Thickness * 4.f, 8, Color, false, Duration);
+
+		Info.TotalLength += Length;
+
+		if (bExposed)
+		{
+			++Info.ExposedSegmentCount;
+			Info.ExposedLength += Length;
+
+			if (Info.FirstSeenBy.IsEmpty())
+			{
+				Info.FirstSeenBy = SeenBy;
+			}
+
+			DrawDebugString(World, (A + B) * 0.5f + Lift * 3.f, FString::Printf(TEXT("EXPOSED (seen by %s)"), *SeenBy),
+				nullptr, FColor::Red, Duration, true);
+		}
+	}
+
+	DrawDebugString(World, End + Lift * 6.f,
+		FString::Printf(TEXT("%s | %s | exposed %d/%d segs, %.0f/%.0f uu"), *Label,
+			Info.IsExposed() ? TEXT("EXPOSED") : TEXT("CONCEALED"),
+			Info.ExposedSegmentCount, Info.SegmentCount, Info.ExposedLength, Info.TotalLength),
+		nullptr, Info.IsExposed() ? FColor::Red : FColor::Green, Duration, true);
+
+	return Info;
+}
+
+void FSTT_MoveToSpot::DebugDrawDecision(UWorld* World, AActor* Pawn, const FVector& Start, const FVector& FinalSpot,
+	TArray<AActor*>& Hunters, const TArray<FVector>& Candidates, const FVector& Chosen, bool bDirectExposed) const
+{
+	if (CVarDrawDebugRoutes.GetValueOnGameThread() < 2)
+	{
+		return;
+	}
+
+	const float Duration = 5.f;
+	const FVector Lift(0.f, 0.f, 25.f);
+
+	const FRouteDebugInfo Direct = DebugDrawRoute(World, Pawn, Start, FinalSpot, Hunters, 1.5f, Duration, TEXT("DIRECT"));
+
+	int32 ChosenIndex = INDEX_NONE;
+	for (int32 i = 0; i < Candidates.Num(); ++i)
+	{
+		if (Candidates[i].Equals(Chosen, 1.f))
+		{
+			ChosenIndex = i;
+			break;
+		}
+	}
+
+	FString FinalText = bDirectExposed
+		? FString::Printf(TEXT("direct route rejected: exposed (seen by %s, %d/%d segs)"), *Direct.FirstSeenBy, Direct.ExposedSegmentCount, Direct.SegmentCount)
+		: FString(TEXT("direct route accepted: concealed from all hunters"));
+
+	if (bDirectExposed && ChosenIndex == INDEX_NONE)
+	{
+		FinalText += FString::Printf(TEXT("\nFALLBACK: none of %d candidate(s) is concealed, going to the final spot anyway"), Candidates.Num());
+	}
+
+	DrawDebugString(World, FinalSpot + Lift * 14.f, FinalText, nullptr, bDirectExposed ? FColor::Red : FColor::Green, Duration, true);
+
+	const FVector2D Start2D(Start);
+	const FVector2D Final2D(FinalSpot);
+
+	for (int32 i = 0; i < Candidates.Num(); ++i)
+	{
+		const FVector& Spot = Candidates[i];
+		const bool bIsChosen = (i == ChosenIndex);
+
+		const FRouteDebugInfo Info = DebugDrawRoute(World, Pawn, Start, Spot, Hunters, bIsChosen ? 3.f : 1.5f, Duration,
+			FString::Printf(TEXT("ALT #%d"), i + 1));
+
+		const float Detour = FVector2D::Distance(Start2D, FVector2D(Spot)) + FVector2D::Distance(FVector2D(Spot), Final2D);
+
+		FString Verdict;
+		FColor Color;
+
+		if (bIsChosen)
+		{
+			Verdict = FString::Printf(TEXT("#%d CHOSEN: first candidate (smallest detour %.0f) whose route is concealed"), i + 1, Detour);
+			Color = FColor::Cyan;
+		}
+		else if (ChosenIndex != INDEX_NONE && i > ChosenIndex)
+		{
+			Verdict = FString::Printf(TEXT("#%d not evaluated by the planner (#%d was accepted first); would be %s, detour %.0f"),
+				i + 1, ChosenIndex + 1, Info.IsExposed() ? TEXT("EXPOSED") : TEXT("CONCEALED"), Detour);
+			Color = FColor(150, 150, 150);
+		}
+		else
+		{
+			Verdict = FString::Printf(TEXT("#%d rejected: route exposed (seen by %s, %d/%d segs), detour %.0f"),
+				i + 1, *Info.FirstSeenBy, Info.ExposedSegmentCount, Info.SegmentCount, Detour);
+			Color = FColor::Orange;
+		}
+
+		DrawDebugSphere(World, Spot + Lift, bIsChosen ? 40.f : 24.f, 12, Color, false, Duration, 0, 2.f);
+		DrawDebugString(World, Spot + Lift * 10.f, Verdict, nullptr, Color, Duration, true);
 	}
 }

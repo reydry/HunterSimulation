@@ -18,6 +18,24 @@ struct FEnemyView
 	ECollisionChannel Channel = ECollisionChannel::ECC_Visibility;
 };
 
+struct FSpot
+{
+	FVector Location;
+	float Detour;
+};
+
+struct FRouteDebugInfo
+{
+	bool bPathFound = false;
+	int32 SegmentCount = 0;
+	int32 ExposedSegmentCount = 0;
+	float TotalLength = 0.f;
+	float ExposedLength = 0.f;
+	FString FirstSeenBy;
+
+	bool IsExposed() const { return ExposedSegmentCount > 0; }
+};
+
 USTRUCT()
 struct FMoveToSpotTaskInstanceData
 {
@@ -68,4 +86,10 @@ private:
 
 	bool Replan(FInstanceDataType& InstanceData) const;
 	void PickSpots(FVector& Start, FInstanceDataType& InstanceData, TArray<FVector>& OutSpots) const;
+
+	FRouteDebugInfo DebugDrawRoute(UWorld* World, AActor* Pawn, const FVector& Start, const FVector& End,
+		TArray<AActor*>& Hunters, float Thickness, float Duration, const FString& Label) const;
+	
+	void DebugDrawDecision(UWorld* World, AActor* Pawn, const FVector& Start, const FVector& FinalSpot,
+		TArray<AActor*>& Hunters, const TArray<FVector>& Candidates, const FVector& Chosen, bool bDirectExposed) const;
 };
