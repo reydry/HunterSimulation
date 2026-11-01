@@ -11,14 +11,7 @@
 class UEnvQueryManager;
 class UEnvQueryInstanceBlueprintWrapper;
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSpotChangedDelegate, AActor*, Victim, FVector, Spot);
-
-static TAutoConsoleVariable<bool> CVarDrawDebugSpots(
-	TEXT("debug.drawspots"),
-	false,
-	TEXT("draw safe spots as spheres"),
-	ECVF_Default
-);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSpotChangedDelegate, UAINavigationManager*, Manager);
 
 UCLASS(Blueprintable)
 class HUNTERSIMULATION_API UAINavigationManager : public UObject
@@ -44,6 +37,15 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FOnSpotChangedDelegate OnSpotChangedDelegateHandle;
 
+	UFUNCTION(BlueprintPure)
+	TArray<AActor*> GetHunters();
+
+	UFUNCTION(BlueprintPure)
+	TArray<FVector> GetSafeSpots();
+
+	UFUNCTION(BlueprintPure)
+	FVector GetTakenSpot(AActor* Character);
+
 protected:
 	UPROPERTY()
 	TArray<AActor*> Hunters;
@@ -56,6 +58,9 @@ protected:
 
 	TArray<FVector> CachedSpots;
 
+	UPROPERTY(EditDefaultsOnly)
+	float CloseRangeRadius = 500.f;
+
 private:
 	UFUNCTION()
 	void OnQueryFinished(UEnvQueryInstanceBlueprintWrapper* QueryInstance, EEnvQueryStatus::Type QueryStatus);
@@ -63,10 +68,11 @@ private:
 	void RefreshSpots();
 
 	void GetAllCoverPoints();
-	
+
 	void StartTomAndJerryLogic();
 	void FindSafeSpots(TArray<FVector>& OutArray);
 	bool IsSpotVisible(FVector& Location, FVector& Direction, FVector& Spot, AActor* Enemy);
+	bool IsSpotCouldBeVisible(FVector& Spot);
 	bool IsOutOfLOS(FVector& Direction, FVector& DirectionToSpot);
 
 	void OnSpotsRefreshed();
@@ -80,4 +86,11 @@ private:
 
 	UPROPERTY()
 	TMap<AActor*, FVector> TakenSpots;
+
+	void DebugDrawHunters();
+	void DebugDrawSpotReasons();
+	void DebugDrawSpotDecision(AActor* Victim, const FVector& Chosen, const FString& Verdict);
+
+	TMap<FVector, FString> SpotDebugReasons;
+	TMap<AActor*, FString> TakenSpotReasons;
 };
