@@ -171,7 +171,7 @@ void UAINavigationManager::OnSpotsRefreshed()
 		{
 			TakenSpots.Remove(Victim);
 			TakenSpots.Emplace(Victim, BestSpot);
-			OnSpotChangedDelegateHandle.Broadcast(Victim, BestSpot);
+			OnSpotChangedDelegateHandle.Broadcast(this);
 		}
 	}
 }
@@ -252,4 +252,25 @@ void UAINavigationManager::RegisterHunters(TArray<AActor*> Actors)
 void UAINavigationManager::RegisterVictims(TArray<AActor*> Actors)
 {
 	Victims = Actors;
+}
+
+TArray<AActor*> UAINavigationManager::GetHunters()
+{
+	return Hunters;
+}
+
+TArray<FVector> UAINavigationManager::GetSafeSpots()
+{
+	return SafeSpots;
+}
+#pragma optimize("", off)
+FVector UAINavigationManager::GetTakenSpot(AActor* Character)
+{
+	FVector* Location = TakenSpots.Find(Character);
+
+	if (Location != nullptr)
+	{
+		return *Location;
+	}
+	return FVector();
 }

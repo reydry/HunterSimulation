@@ -11,11 +11,11 @@
 class UEnvQueryManager;
 class UEnvQueryInstanceBlueprintWrapper;
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSpotChangedDelegate, AActor*, Victim, FVector, Spot);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSpotChangedDelegate, UAINavigationManager*, Manager);
 
 static TAutoConsoleVariable<bool> CVarDrawDebugSpots(
 	TEXT("debug.drawspots"),
-	false,
+	1,
 	TEXT("draw safe spots as spheres"),
 	ECVF_Default
 );
@@ -43,6 +43,15 @@ public:
 
 	UPROPERTY(BlueprintAssignable)
 	FOnSpotChangedDelegate OnSpotChangedDelegateHandle;
+
+	UFUNCTION(BlueprintPure)
+	TArray<AActor*> GetHunters();
+
+	UFUNCTION(BlueprintPure)
+	TArray<FVector> GetSafeSpots();
+
+	UFUNCTION(BlueprintPure)
+	FVector GetTakenSpot(AActor* Character);
 
 protected:
 	UPROPERTY()

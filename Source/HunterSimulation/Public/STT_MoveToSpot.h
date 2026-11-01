@@ -23,19 +23,22 @@ struct FMoveToSpotTaskInstanceData
 {
 	GENERATED_BODY()
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Context)
 	AAIController* Controller;
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Parameter)
 	TArray<AActor*> Hunters;
 
+	UPROPERTY(EditAnywhere, Category = Parameter)
 	FVector Spot;
 
+	UPROPERTY(EditAnywhere, Category = Parameter)
 	TArray<FVector> SafeSpots;
 
-	bool bAtTarget;
-
+	UPROPERTY(EditAnywhere, Category = Parameter)
 	float AcceptanceRadius;
+
+	bool bAtTarget;
 
 	TArray<FVector> VisitedSpots;
 
@@ -48,7 +51,7 @@ struct HUNTERSIMULATION_API FSTT_MoveToSpot : public FStateTreeTaskCommonBase
 	GENERATED_BODY()
 	
 	using FInstanceDataType = FMoveToSpotTaskInstanceData;
-
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
 public:
 
 protected:

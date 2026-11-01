@@ -15,10 +15,15 @@
 #include "StateTreeExecutionContext.h"
 #include "NavigationPath.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogMoveToSpot, Log, All);
+
 EStateTreeRunStatus FSTT_MoveToSpot::EnterState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	
+	InstanceData.CurrentSpot = FVector(FLT_MAX);
+	InstanceData.bAtTarget = false;
+
 	return Replan(InstanceData) ? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;
 }
 
@@ -33,14 +38,20 @@ EStateTreeRunStatus FSTT_MoveToSpot::Tick(FStateTreeExecutionContext& Context, c
 		return EStateTreeRunStatus::Failed;
 	}
 
-	bool bTargetReached = FVector::Dist2D(Owner->GetActorLocation(), InstanceData.Spot) <= InstanceData.AcceptanceRadius;
+	FVector ActorLocation = Owner->GetActorLocation();
+	float Dist = FVector::Dist2D(ActorLocation, InstanceData.Spot);
+
+	bool bTargetReached = Dist <= InstanceData.AcceptanceRadius;
+
+	float DistToCurrentSpot = FVector::Dist2D(ActorLocation, InstanceData.CurrentSpot);
+	bool bCurrentSpotReached = DistToCurrentSpot <= InstanceData.AcceptanceRadius;
 
 	if (bTargetReached)
 	{
 		return EStateTreeRunStatus::Succeeded;
 	}
 
-	if (!InstanceData.bAtTarget && bTargetReached)
+	if (!InstanceData.bAtTarget && bCurrentSpotReached)
 	{
 		AddVisited(InstanceData.CurrentSpot, InstanceData);
 		return Replan(InstanceData) ? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;
@@ -55,11 +66,24 @@ bool FSTT_MoveToSpot::IsPathExposed(UWorld* World, AActor* Pawn, FVector& Start,
 	
 	if (!IsValid(NavigationSystem))
 	{
+		UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] IsPathExposed: navigation system is invalid, treating path as hidden"), *GetNameSafe(Pawn));
 		return false;
 	}
 
-	UNavigationPath* Path = NavigationSystem->FindPathToLocationSynchronously(World, Pawn->GetActorLocation(), End, Pawn);
+	UNavigationPath* Path = NavigationSystem->FindPathToLocationSynchronously(World, Start, End, Pawn);
+	
+	if (!IsValid(Path))
+	{
+		UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] IsPathExposed: no navigation path %s -> %s, treating path as exposed"), *GetNameSafe(Pawn),
+			*Start.ToCompactString(), *End.ToCompactString());
+		return true;
+	}
+
 	TArray<FVector> PathPoints = Path->PathPoints;
+
+	UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] IsPathExposed: path %s -> %s, points=%d, valid=%s, partial=%s, hunters=%d"), *GetNameSafe(Pawn),
+		*Start.ToCompactString(), *End.ToCompactString(), PathPoints.Num(),
+		Path->IsValid() ? TEXT("yes") : TEXT("no"), Path->IsPartial() ? TEXT("yes") : TEXT("no"), Hunters.Num());
 
 	for (AActor* Hunter : Hunters)
 	{
@@ -67,10 +91,18 @@ bool FSTT_MoveToSpot::IsPathExposed(UWorld* World, AActor* Pawn, FVector& Start,
 		{
 			if (IsPathSegmentExposed(PathPoints[i], PathPoints[i + 1], Hunter, 60))
 			{
+				UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] IsPathExposed: segment %d/%d (%s -> %s) is seen by hunter %s -> EXPOSED"), *GetNameSafe(Pawn),
+					i, PathPoints.Num() - 1,
+					*PathPoints[i].ToCompactString(), *PathPoints[i + 1].ToCompactString(),
+					*GetNameSafe(Hunter));
 				return true;
 			}
 		}
 	}
+	
+	UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] IsPathExposed: path %s -> %s is hidden from all hunters"), *GetNameSafe(Pawn),
+		*Start.ToCompactString(), *End.ToCompactString());
+
 	return false;
 }
 
@@ -78,6 +110,7 @@ bool FSTT_MoveToSpot::IsPathSegmentExposed(FVector& Start, FVector& End, AActor*
 {
 	if (!IsValid(Hunter))
 	{
+		UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] IsPathSegmentExposed: hunter is invalid, skipping"), *GetNameSafe(Hunter));
 		return false;
 	}
 
@@ -86,7 +119,13 @@ bool FSTT_MoveToSpot::IsPathSegmentExposed(FVector& Start, FVector& End, AActor*
 
 	Hunter->GetActorEyesViewPoint(EyeLocation, EyeRotation);
 
-	return IsPathSegmentExposed2D(Start, End, EyeLocation, EyeRotation.Vector(), HalfFOV);
+	const bool bExposed = IsPathSegmentExposed2D(Start, End, EyeLocation, EyeRotation.Vector(), HalfFOV);
+
+	UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] IsPathSegmentExposed: eye=%s, dir=%s, halfFOV=%.1f, segment %s -> %s, inFOV=%s"), *GetNameSafe(Hunter),
+		*EyeLocation.ToCompactString(), *EyeRotation.Vector().ToCompactString(), HalfFOV,
+		*Start.ToCompactString(), *End.ToCompactString(), bExposed ? TEXT("yes") : TEXT("no"));
+
+	return bExposed;
 }
 
 bool FSTT_MoveToSpot::IsPathSegmentExposed2D(FVector& Start, FVector& End, FVector& EyeLocation, FVector EyeDirection, float HalfFOV) const
@@ -140,6 +179,8 @@ bool FSTT_MoveToSpot::IsPathSegmentExposed2D(FVector& Start, FVector& End, FVect
 void FSTT_MoveToSpot::AddVisited(FVector& Spot, FInstanceDataType& InstanceData) const
 {
 	InstanceData.VisitedSpots.Emplace(Spot);
+	const APawn* Pawn = IsValid(InstanceData.Controller) ? InstanceData.Controller->GetPawn() : nullptr;
+	UE_LOG(LogMoveToSpot, Log, TEXT("[%s] AddVisited: spot=%s, totalVisited=%d"), *GetNameSafe(Pawn), *Spot.ToCompactString(), InstanceData.VisitedSpots.Num());
 }
 
 bool FSTT_MoveToSpot::Replan(FInstanceDataType& InstanceData) const
@@ -150,31 +191,60 @@ bool FSTT_MoveToSpot::Replan(FInstanceDataType& InstanceData) const
 
 	if (!IsValid(World))
 	{
+		UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] Replan: pawn or world is invalid -> false"), *GetNameSafe(Controller));
 		return false;
 	}
 
 	FVector Target = InstanceData.Spot;
 	FVector Start = Owner->GetActorLocation();
 	
+	UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: start=%s, finalSpot=%s, currentSpot=%s, visited=%d, safeSpots=%d"), *GetNameSafe(Owner),
+		*Start.ToCompactString(), *InstanceData.Spot.ToCompactString(),
+		*InstanceData.CurrentSpot.ToCompactString(), InstanceData.VisitedSpots.Num(), InstanceData.SafeSpots.Num());
+
 	if (IsPathExposed(World, Owner, Start, Target, InstanceData.Hunters))
 	{
+		UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: direct path to final spot is EXPOSED, looking for safe spots"), *GetNameSafe(Owner));
+
 		TArray<FVector> PossibleSpots;
 		PickSpots(Start, InstanceData, PossibleSpots);
 
+		UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: %d candidate spot(s) picked"), *GetNameSafe(Owner), PossibleSpots.Num());
+
+		bool bFoundSafeSpot = false;
+
 		for (FVector& Spot : PossibleSpots)
 		{
-			if (!IsPathExposed(World, Owner, Start, Spot, InstanceData.Hunters))
+			const bool bExposed = IsPathExposed(World, Owner, Start, Spot, InstanceData.Hunters);
+
+			if (!bExposed)
 			{
+				UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: candidate %s -> %s"), *GetNameSafe(Owner),
+					*Spot.ToCompactString(), bExposed ? TEXT("exposed") : TEXT("hidden"));
+
 				Target = Spot;
+				bFoundSafeSpot = true;
 				break;
 			}
 		}
+
+		if (!bFoundSafeSpot)
+		{
+			UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] Replan: no hidden candidate found, falling back to final spot"), *GetNameSafe(Owner));
+		}
+	}
+	else
+	{
+		UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: direct path to final spot is hidden, going directly"), *GetNameSafe(Owner));
 	}
 
 	bool bIsTarget = Target.Equals(InstanceData.Spot, 1.f);
 
 	if (Target.Equals(InstanceData.CurrentSpot, 1.f) && Controller->GetMoveStatus() == EPathFollowingStatus::Moving)
 	{
+		UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: target %s unchanged and already moving, not restarting movement"), *GetNameSafe(Owner),
+			*Target.ToCompactString());
+
 		InstanceData.bAtTarget = bIsTarget;
 		return true;
 	}
@@ -182,7 +252,12 @@ bool FSTT_MoveToSpot::Replan(FInstanceDataType& InstanceData) const
 	InstanceData.CurrentSpot = Target;
 	InstanceData.bAtTarget = bIsTarget;
 
-	EPathFollowingRequestResult::Type Result = Controller->MoveToLocation(Target, InstanceData.AcceptanceRadius, true, true, true);
+	EPathFollowingRequestResult::Type Result = Controller->MoveToLocation(Target, InstanceData.AcceptanceRadius, false, true, true);
+
+	UE_LOG(LogMoveToSpot, Log, TEXT("[%s] Replan: MoveToLocation(%s, radius %.1f) [%s] -> result=%d, moveStatus=%d"), *GetNameSafe(Owner),
+		*Target.ToCompactString(), InstanceData.AcceptanceRadius,
+		bIsTarget ? TEXT("final spot") : TEXT("intermediate spot"),
+		static_cast<int32>(Result), static_cast<int32>(Controller->GetMoveStatus()));
 
 	if (Result != EPathFollowingRequestResult::Type::Failed)
 	{
@@ -191,8 +266,13 @@ bool FSTT_MoveToSpot::Replan(FInstanceDataType& InstanceData) const
 
 	if (bIsTarget)
 	{
+		UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] Replan: MoveToLocation to final spot failed -> false"), *GetNameSafe(Owner));
+
 		return false;
 	}
+
+	UE_LOG(LogMoveToSpot, Warning, TEXT("[%s] Replan: MoveToLocation to intermediate spot %s failed, marking visited"), *GetNameSafe(Owner),
+		*Target.ToCompactString());
 
 	AddVisited(Target, InstanceData);
 
@@ -202,15 +282,18 @@ bool FSTT_MoveToSpot::Replan(FInstanceDataType& InstanceData) const
 void FSTT_MoveToSpot::PickSpots(FVector& Start, FInstanceDataType& InstanceData, TArray<FVector>& OutSpots) const
 {
 	OutSpots.Reset();
-
+	const APawn* Pawn = IsValid(InstanceData.Controller) ? InstanceData.Controller->GetPawn() : nullptr;
 	struct FSpot
 	{
 		FVector Location;
 		float Detour;
 	};
-
+	const int32 MaxCandidates = 5;
 	TArray<FSpot> Best;
-	Best.Reserve(5);
+	Best.Reserve(MaxCandidates + 1);
+
+	int32 SkippedVisited = 0;
+	int32 SkippedWorse = 0;
 
 	for (FVector& Spot : InstanceData.SafeSpots)
 	{
@@ -231,10 +314,19 @@ void FSTT_MoveToSpot::PickSpots(FVector& Start, FInstanceDataType& InstanceData,
 
 		if (bVisited)
 		{
+			++SkippedVisited;
 			continue;
 		}
 		
-		if (DetourLength >= Best.Last().Detour)
+		if (Best.Num() >= MaxCandidates && DetourLength >= Best.Last().Detour)
+		{
+			++SkippedWorse;
+			UE_LOG(LogMoveToSpot, Verbose, TEXT("[%s] PickSpots: spot %s skipped (detour %.1f >= worst kept %.1f)"), *GetNameSafe(Pawn),
+				*Spot.ToCompactString(), DetourLength, Best.Last().Detour);
+			continue;
+		}
+
+		if (!Best.IsEmpty() && DetourLength >= Best.Last().Detour)
 		{
 			continue;
 		}
@@ -246,11 +338,16 @@ void FSTT_MoveToSpot::PickSpots(FVector& Start, FInstanceDataType& InstanceData,
 		}
 		
 		Best.Insert(FSpot(Spot, DetourLength), InsertIndex);
-		
-		for (FSpot& BestSpot : Best)
+
+		if (Best.Num() > MaxCandidates)
 		{
-			OutSpots.Emplace(BestSpot.Location);
+			Best.Pop();
 		}
+	}
+
+	for (FSpot& BestSpot : Best)
+	{
+		OutSpots.Emplace(BestSpot.Location);
 	}
 }
 
