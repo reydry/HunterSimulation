@@ -8,6 +8,7 @@ Known issues:
 
 1. The character does not always reach the point (it may stop somewhere nearby).
 2. It may not always find the optimal path.
+3. Safe zones are not generated near all walls (need to reconfigure EQS)
 
 # DEBUG
 ai.debug.routes (0-2)
